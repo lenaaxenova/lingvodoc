@@ -183,6 +183,9 @@ def configure_routes(config):
 
     # API #GET
     config.add_route('users', '/users')  # tested
+    config.add_route(name='change_user_password',
+                     pattern='/users/{login}',
+                     factory='lingvodoc.models.AdminAcl')  # new
 
     # web-view
     config.add_route(name='new_dictionary', pattern='/create_dictionary')
@@ -787,6 +790,10 @@ def configure_routes(config):
     # time interval. Time interval is specified in the same way as for 'stat_perspective'.
     config.add_route(name = 'stat_dictionary',
       pattern = '/statistics/dictionary/{dictionary_client_id}/{dictionary_object_id}')
+
+    # Compiles archive of sound recordings and corresponding markups for a specified perspective.
+    config.add_route(name = "sound_and_markup", pattern = "/sound_and_markup")
+    config.add_route(name = "graphql", pattern = "/graphql")
 
 
 def main(global_config, **settings):

@@ -139,7 +139,7 @@ def update_perspective_fields(req,
         #for field in fields: ## ?
         #    DBSession.delete(field)
         if not int(len(fields)):
-            position = 1
+            position = 1  # TODO: postition fix
             for field in req:
                 create_nested_field(field=field,
                                     perspective=perspective,
@@ -649,7 +649,9 @@ def convert_five_tiers(
                                 if len(word_translation[i]) > 1 and word_translation[i][1].time is not None]
 
                     main_tier_text = " ".join(mt_words)
-                    main_tier_time = (mt_times[0], mt_times[-1])
+                    main_tier_time = None
+                    if mt_times:
+                        main_tier_time = (mt_times[0], mt_times[-1])
                     if main_tier_text:
                         paradigm_words.append(elan_parser.Word(text=main_tier_text,
                                                                tier="Word of Paradigmatic forms",

@@ -218,7 +218,8 @@ class PublishDictionaryController(scope: PublishDictionaryScope,
           perspectiveObjectId = perspectiveObjectId,
           lexicalEntry = entry.asInstanceOf[js.Object],
           field = field.asInstanceOf[js.Object],
-          values = values.asInstanceOf[js.Object]
+          values = values.asInstanceOf[js.Object],
+          edit = false
         )
       }
     ).asInstanceOf[js.Dictionary[Any]]
@@ -294,8 +295,8 @@ class PublishDictionaryController(scope: PublishDictionaryScope,
   }
 
   @JSExport
-  def getSortByPageLink(sort: String): String = {
-    getPageLink(scope.pageNumber) + "/" + sort
+  def getSortByPageLink(field: Field): String = {
+    getPageLink(scope.pageNumber) + "/" + field.getId
   }
 
   @JSExport

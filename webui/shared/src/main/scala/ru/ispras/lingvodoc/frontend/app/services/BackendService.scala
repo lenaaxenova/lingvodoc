@@ -653,8 +653,17 @@ class BackendService($http: HttpService, val timeout: Timeout, val exceptionHand
     p.future
   }
 
+  def updatePassword(oldPassword: String, newPassword: String): Future[Unit] = {
+    val p = Promise[Unit]()
 
-
+    val req = js.Dynamic.literal("old_password" -> oldPassword, "new_password" -> newPassword)
+    $http.put[js.Object](getMethodUrl("user"), JSON.stringify(req)) onComplete {
+      case Success(js) =>
+        p.success(())
+      case Failure(e) => p.failure(BackendException("Failed to update user password", e))
+    }
+    p.future
+  }
 
   def getUser(userId: Int): Future[User] = {
     val p = Promise[User]()
@@ -825,7 +834,11 @@ class BackendService($http: HttpService, val timeout: Timeout, val exceptionHand
     url = addUrlParameter(url, "count", count.toString)
 
     sortBy.foreach { s =>
-      url = addUrlParameter(url, "sort_by", s)
+      val ids = s.split("_")
+      if (ids.length == 2) {
+        url = addUrlParameter(url, "field_client_id", ids(0))
+        url = addUrlParameter(url, "field_object_id", ids(1))
+      }
     }
 
     $http.get[js.Dynamic](getMethodUrl(url)) onComplete {
@@ -876,10 +889,10 @@ class BackendService($http: HttpService, val timeout: Timeout, val exceptionHand
 
 
 
-  def connectedLexicalEntries(entryId: CompositeId, fieldId: CompositeId) = {
+  def connectedLexicalEntries(entryId: CompositeId, fieldId: CompositeId, onlyConnected: Boolean = false, published: Boolean = false) = {
     val p = Promise[Seq[LexicalEntry]]()
 
-    val url = s"lexical_entry/${encodeURIComponent(entryId.clientId.toString)}/${encodeURIComponent(entryId.objectId.toString)}/connected?field_client_id=${encodeURIComponent(fieldId.clientId.toString)}&field_object_id=${encodeURIComponent(fieldId.objectId.toString)}"
+    val url = s"lexical_entry/${encodeURIComponent(entryId.clientId.toString)}/${encodeURIComponent(entryId.objectId.toString)}/connected?field_client_id=${encodeURIComponent(fieldId.clientId.toString)}&field_object_id=${encodeURIComponent(fieldId.objectId.toString)}&accepted=${encodeURIComponent(onlyConnected.toString)}&published=${encodeURIComponent(published.toString)}"
 
     $http.get[js.Dynamic](getMethodUrl(url)) onComplete {
       case Success(response) =>
@@ -2703,6 +2716,52 @@ class BackendService($http: HttpService, val timeout: Timeout, val exceptionHand
     p.future
   }
 
+  /** Sound/markup archive generation request. */
+  def sound_and_markup(
+    perspectiveId: CompositeId,
+    published_mode: String):
+    Future[Unit] =
+  {
+    val p = Promise[Unit]
+
+    val url = s"""sound_and_markup?
+      |perspective_client_id=${perspectiveId.clientId}&
+      |perspective_object_id=${perspectiveId.objectId}&
+      |published_mode=${published_mode}
+      |""".stripMargin.replaceAll("\n", "")
+
+    $http.get[js.Dynamic](url) onComplete
+    {
+      case Success(response) =>
+
+        try
+        {
+          if (response.asInstanceOf[js.Object].hasOwnProperty("error"))
+
+            p.failure(new BackendException(
+              "Error while launching sound/markup archive generation:\n" + response.error))
+
+          else p.success(())
+        }
+
+        catch
+        {
+          case e: upickle.Invalid.Json => p.failure(
+            BackendException("Malformed json", e))
+
+          case e: upickle.Invalid.Data => p.failure(
+            BackendException("Malformed data. Missing some required fields", e))
+
+          case e: Throwable => p.failure(
+            BackendException("Unknown exception", e))
+        }
+
+      case Failure(e) => p.failure(BackendException(
+        "Failed to launch sound/markup archive generation: " + e.getMessage, e))
+    }
+
+    p.future
+  }
 }
 
 

@@ -1,3 +1,4 @@
+from passlib.hash import bcrypt
 from lingvodoc.views.v2.utils import (
     get_user_by_client_id,
     view_field_from_object,
@@ -24,7 +25,8 @@ from lingvodoc.models import (
     ObjectTOC,
     LexicalEntry,
     Dictionary,
-    Entity
+    Entity,
+    Passhash
 )
 
 from sqlalchemy import (
@@ -57,11 +59,16 @@ import json
 import requests
 from pyramid.request import Request
 from time import time
+from webob.multidict import MultiDict, NoVars
+from lingvodoc.schema.query import schema, Context
+
 from copy import deepcopy
 if sys.platform == 'darwin':
     multiprocessing.set_start_method('spawn')
 import os
 from lingvodoc.views.v2.translations import translationgist_contents
+from hashlib import sha224
+from base64 import urlsafe_b64decode
 
 log = logging.getLogger(__name__)
 
@@ -226,6 +233,16 @@ def fix_groups(request):
 
     return {}
 
+def translation_service_search(searchstring):
+    translationatom = DBSession.query(TranslationAtom)\
+        .join(TranslationGist).\
+        filter(TranslationAtom.content == searchstring,
+               TranslationAtom.locale_id == 2,
+               TranslationGist.type == 'Service')\
+        .order_by(TranslationAtom.client_id)\
+        .first()
+    response = translationgist_contents(translationatom.parent)
+    return response
 
 def add_role(name, subject, action, admin, perspective_default=False, dictionary_default=False):
     base_group = BaseGroup(name=name,
@@ -244,38 +261,17 @@ def add_role(name, subject, action, admin, perspective_default=False, dictionary
 
 @view_config(route_name='testing', renderer='json', permission='admin')
 def testing(request):
-    admin = DBSession.query(User).filter_by(id=1).one()
-    if DBSession.query(BaseGroup).filter_by(name="Can create grants").first():
-        return {"error": "already done"}
-    add_role("Can create grants", "grant", "create", admin)
-    add_role("Can approve grants", "grant", "approve", admin)
-    add_role("Can approve organizations", "organization", "approve", admin)
+    # Hello, testing, my old friend
+    # I've come to use you once again
+    persps = list()
+    persp_to_dict = lambda x: [
+        {'additional_metadata': p.additional_metadata,
+         'client_id': p.client_id,
+         'object_id': p.object_id} for p in x]
+    persps = DBSession.query(DictionaryPerspective).filter(
+        DictionaryPerspective.additional_metadata['location'] is not None).all()
+    return persp_to_dict(persps)
 
-    base_group = add_role("Can edit dictionary status", "dictionary_status", "edit", admin, dictionary_default=True)
-    groups = DBSession.query(Group).join(BaseGroup).filter(BaseGroup.subject == 'dictionary_role',
-                                                           BaseGroup.action == 'delete',
-                                                           Group.subject_override == False).all()
-    for group in groups:
-        new_group = Group(parent=base_group, subject_client_id=group.subject_client_id, subject_object_id=group.subject_object_id)
-        DBSession.add(new_group)
-        DBSession.flush()
-        for user in group.users:
-            new_group.users.append(user)
-    base_group = add_role("Can edit perspective status", "perspective_status", "edit", admin, perspective_default=True)
-    groups = DBSession.query(Group).join(BaseGroup).filter(BaseGroup.subject == 'perspective_role',
-                                                           BaseGroup.action == 'delete',
-                                                           Group.subject_override == False).all()
-    for group in groups:
-        new_group = Group(parent=base_group, subject_client_id=group.subject_client_id, subject_object_id=group.subject_object_id)
-        DBSession.add(new_group)
-        DBSession.flush()
-        for user in group.users:
-            new_group.users.append(user)
-
-    # add_role("Can change status", "status", "edit", admin)
-
-
-    return {}
 
 @view_config(route_name='main', renderer='templates/main.pt', request_method='GET')
 def main_get(request):
@@ -603,6 +599,158 @@ def create_persp_to_field(request):
     except CommonException as e:
         request.response.status = HTTPConflict.code
         return {'error': str(e)}
+
+@view_config(route_name='change_user_password', renderer="json", request_method='POST', permission='admin')
+def change_user_password(request):
+    login = request.matchdict.get('login')
+    req = request.json_body
+    user = DBSession.query(User).filter_by(login=login).first()
+    if not user:
+        raise CommonException("This login is orphaned")
+    new_password = req.get('password')
+    if not new_password:
+        request.response.status = HTTPBadRequest.code
+        return {'error': str("Need new password to confirm")}
+    old_hash = DBSession.query(Passhash).filter_by(user_id=user.id).first()
+    old_hash.hash = bcrypt.encrypt(new_password)
+    request.response.status = HTTPOk.code
+    return {"success": True}
+
+
+#TODO: Remove it
+@view_config(route_name='graphql', renderer='json')
+def graphql(request):
+    """
+    #####################
+    ### application/json
+    #####################
+    
+    {"variables": {}, "query": "query perspective{ perspective(id: [630,9]) {id translation tree{id} fields{id} }}"}
+    
+    or a batch of queries:
+    
+    [
+        {"variables": {}, "query": "query perspective{ perspective(id: [630,9]) {id translation tree{id} fields{id} }}"},
+        {"variables": {}, "query": "query myQuery{ entity(id:[ 742, 5494, ] ) { id}}"}
+    ]
+    
+    #####################
+    ### application/graphql
+    #####################
+    
+    query perspective{ perspective(id: [630,9]) {id translation tree{id} fields{id} }}"
+    
+    #####################
+    ### application/multipart/form-data
+    #####################
+    
+    MultiDict([
+    ('graphql', "mutation create_entity..."),
+     ('blob', FieldStorage('blob', 'PA_1313_lapetkatpuwel (1).wav')),
+     ('blob', FieldStorage('blob', 'PA_1313_lapetkatpuwel (1).wav')),
+     ])
+    
+    """
+    # TODO: rewrite this footwrap
+    sp = request.tm.savepoint()
+    try:
+        batch = False
+        variable_values={}
+        variables = {'auth': request.authenticated_userid}
+        client_id = variables["auth"]
+        results = list()
+        if not client_id:
+            client_id = None
+        locale_id = int(request.cookies.get('locale_id') or 2)
+
+        if request.content_type in ['application/x-www-form-urlencoded','multipart/form-data'] \
+                and type(request.POST) == MultiDict:
+            data = request.POST
+            if not data:
+                return {'error': 'empty request'}
+            elif not "query" in data:
+                return {'error': 'query key not nound'}
+            elif not "blob" in data:
+                return {'error': 'blob key not nound'}
+            request_string = request.POST.pop("query") # TODO: change to query?
+            request_string= request_string.rstrip()
+            '''
+            if data and "file" in data and "graphene" in data:
+                # We can get next file from the list inside file upload mutation resolve
+                # use request.POST.popitem()
+                request_string = request.POST.popitem()  # data["graphene"]
+                # todo: file usage
+                # files = data.getall("file")
+            else:
+                request.response.status = HTTPBadRequest.code
+                return {'error': 'wrong data'}
+
+            '''
+        elif request.content_type == "application/graphql" and type(request.POST) == NoVars:
+            request_string = request.body.decode("utf-8") 
+        elif request.content_type == "application/json" and type(request.POST) == NoVars:
+            body = request.body.decode('utf-8')
+            json_req = json.loads(body)
+            if type(json_req) is list:
+                batch = True
+            if not batch:   
+                if "query" not in json_req:
+                    return {'error': 'query key not nound'}
+                request_string = json_req["query"]
+                if "variables" in json_req:
+                    variable_values = json_req["variables"]
+            else:
+                for query in json_req:
+                    
+                    if "query" not in query:
+                        return {'error': 'query key not nound'}
+                    request_string = query["query"]
+                    if "variables" in query:
+                        variable_values = query["variables"]
+                    result = schema.execute(request_string,
+                                            context_value=Context({
+                                                'client_id': client_id,
+                                                'locale_id': locale_id,
+                                                'request': request,
+                                                'headers': request.headers,
+                                                'cookies': dict(request.cookies)}),
+                                            variable_values=variable_values)
+                    results.append(result.data)
+                # TODO: check errors
+                return {"data": results}
+        else:
+            request.response.status = HTTPBadRequest.code
+            return {'error': 'wrong content type'}
+        if not batch:
+            published = request.params.get('published')
+            if published is None:
+                published = False  # todo: use this
+
+            result = schema.execute(request_string,
+                                    context_value=Context({
+                                        'client_id': client_id,
+                                        'locale_id': locale_id,
+                                        'request': request}),
+                                    variable_values=variable_values)
+
+            if result.invalid:
+                return {'errors': [str(e) for e in result.errors]}
+            if result.errors:
+                sp.rollback()
+                return {'errors': [str(e) for e in result.errors]}
+            return {"data": result.data}
+    except KeyError as e:
+        request.response.status = HTTPBadRequest.code
+        return {'error': str(e)}
+
+    except IntegrityError as e:
+        request.response.status = HTTPInternalServerError.code
+        return {'error': str(e)}
+
+    except CommonException as e:
+        request.response.status = HTTPConflict.code
+        return {'error': str(e)}
+
 
 
 conn_err_msg = """\

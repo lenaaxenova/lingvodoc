@@ -135,7 +135,9 @@ class ViewDictionaryController(scope: ViewDictionaryScope,
           perspectiveObjectId = perspectiveObjectId,
           lexicalEntry = entry.asInstanceOf[js.Object],
           field = field.asInstanceOf[js.Object],
-          values = values.asInstanceOf[js.Object]
+          values = values.asInstanceOf[js.Object],
+          edit = false,
+          published = true
         )
       }
     ).asInstanceOf[js.Dictionary[Any]]
@@ -204,8 +206,8 @@ class ViewDictionaryController(scope: ViewDictionaryScope,
   }
 
   @JSExport
-  def getSortByPageLink(sort: String): String = {
-    getPageLink(scope.pageNumber) + "/" + sort
+  def getSortByPageLink(field: Field): String = {
+    getPageLink(scope.pageNumber) + "/" + field.getId
   }
 
   @JSExport
